@@ -1,0 +1,25 @@
+# Set the default behavior, in case people don't have core.autocrlf set.
+# This will handle all text files automatically.
+* text=auto
+
+#
+# Explicitly normalize files we know are text.
+#
+*.py eol=lf
+*.md eol=lf
+*.json eol=lf
+*.yml eol=lf
+*.yaml eol=lf
+*.ini eol=lf
+*.conf eol=lf
+*.txt eol=lf
+*.sh eol=lf
+*.bat eol=crlf
+
+#
+# Explicitly mark files we know are binary to prevent Git from touching them.
+#
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.sqlite3 binary

@@ -1,0 +1,156 @@
+x-default-network: &default-network
+  networks:
+    - appnet
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+    <<: *default-network
+
+  web:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: intelligent-log-analysis:v1.0.0 # <-- 1. Consistent Image Name
+    restart: unless-stopped
+    env_file: ./.env
+    command: sh -c "python manage.py migrate && gunicorn core.wsgi:application -w 4 -b 0.0.0.0:8000 --access-logfile -"
+    # The development volume is moved to docker-compose.override.yml
+    depends_on: # <-- 2. More Robust Dependencies
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+    healthcheck: # The healthcheck is moved to the override file for development
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"] # Placeholder
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    <<: *default-network
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: intelligent-log-analysis:v1.0.0
+    restart: unless-stopped
+    env_file: ./.env
+    command: celery -A core worker -l info
+    depends_on: # <-- 2. More Robust Dependencies
+      db:
+        condition: service_healthy
+      redis: 
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+    <<: *default-network
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: intelligent-log-analysis:v1.0.0
+    restart: unless-stopped
+    env_file: ./.env
+    command: celery -A core beat -S django -l info
+    depends_on: # <-- 2. More Robust Dependencies
+      db:
+        condition: service_healthy
+      redis: 
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+    <<: *default-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    <<: *default-network
+
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: logdb
+      POSTGRES_USER: loguser
+      POSTGRES_PASSWORD: PgPass_1234
+    volumes:
+      - ./deploy/pgbouncer/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - pgdata:/var/lib/postgresql/data
+    command: postgres -c hba_file=/etc/postgresql/pg_hba.conf
+    <<: *default-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loguser -d logdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgbouncer:
+    build:
+      context: ./deploy/pgbouncer
+      args:
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    restart: unless-stopped
+    env_file: ./.env
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 6432 -U ${POSTGRES_USER} -d logdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    <<: *default-network
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minio__admin11
+      MINIO_ROOT_PASSWORD: minio__admin11
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+    <<: *default-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    <<: *default-network
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    <<: *default-network
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+
+networks:
+  appnet:
+    driver: bridge

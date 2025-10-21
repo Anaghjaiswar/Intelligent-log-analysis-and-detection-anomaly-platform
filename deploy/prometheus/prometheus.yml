@@ -1,0 +1,19 @@
+# Global configuration controls the default settings for all jobs.
+global:
+  scrape_interval: 15s      # How frequently to scrape targets by default.
+  evaluation_interval: 15s  # How frequently to evaluate rules.
+
+# A list of scrape configurations, one for each service to be monitored.
+scrape_configs:
+  # Job 1: Monitor Prometheus itself. This is a standard best practice.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090'] # Prometheus scrapes its own metrics endpoint.
+
+  # Job 2: Monitor the Django application.
+  # This job scrapes the /metrics endpoint exposed by the django-prometheus library.
+  - job_name: 'django-api'
+    static_configs:
+      # The target is the 'web' service container on port 8000.
+      # Docker's internal DNS will resolve 'web' to the container's IP address.
+      - targets: ['web:8000']
