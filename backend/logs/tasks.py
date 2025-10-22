@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True)
-def process_log_chunk(self, entries):
+def process_log_chunk(self, entries, stream_name, group_name, message_ids):
     """Subtask that processes a batch of decoded log entries."""
     try:
         app_ids = {int(e["application_id"]) for e in entries}
+        # Fetch all unique applications in a single query
         apps = {a.id: a for a in Application.objects.filter(id__in=app_ids)}
 
         to_create = []
@@ -26,6 +27,7 @@ def process_log_chunk(self, entries):
             app = apps.get(int(e["application_id"]))
             if not app:
                 continue
+            # Create LogEntry model instances
             to_create.append(
                 LogEntry(
                     application=app,
@@ -39,11 +41,21 @@ def process_log_chunk(self, entries):
         if to_create:
             with transaction.atomic():
                 LogEntry.objects.bulk_create(to_create, batch_size=100)
-            logger.info(f"Inserted {len(to_create)} logs in chunk")
+            
+            # Acknowledge messages only after successful database insertion
+            try:
+                redis_client = caches["log_queue"].client.get_client()
+                redis_client.xack(stream_name, group_name, *message_ids)
+                logger.info(f"Successfully processed and acknowledged {len(to_create)} logs.")
+            except Exception as e:
+                # If ack fails, logs might be reprocessed, which is acceptable for at-least-once delivery.
+                logger.error(f"DB insert succeeded, but Redis XACK failed for {len(message_ids)} messages: {e}")
+
         return len(to_create)
 
     except Exception as exc:
         logger.error(f"Error in process_log_chunk: {exc}")
+        # Do not acknowledge messages if processing failed. They will be re-processed later.
         return 0
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5)
@@ -79,39 +91,39 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
             logger.info("no logs in queue")
             return "Idle"
         
-        decoded_entries = []
-        message_ids = []
+        # Group messages and their IDs together for chunking
+        entries_with_ids = []
 
         # flatten queue responses
         for _, msgs in entries:
             for msg_id, data in msgs:
-                message_ids.append(msg_id)
                 try:
-                    decoded_entries.append({
-                        "application_id": data[b"application_id"].decode(),
-                        "timestamp": data[b"timestamp"].decode(),
-                        "level": data[b"level"].decode(),
-                        "message": data[b"message"].decode(),
-                        "metadata": data[b"metadata"].decode(),
-                    })
+                    decoded_entry = {
+                            "application_id": data[b"application_id"].decode(),
+                            "timestamp": data[b"timestamp"].decode(),
+                            "level": data[b"level"].decode(),
+                            "message": data[b"message"].decode(),
+                            "metadata": data[b"metadata"].decode(),
+                        }
+                    entries_with_ids.append({'id': msg_id, 'data': decoded_entry})
                 except Exception as e:
                     logger.warning(f"Bad entry skipped: {e}")
+                    # Acknowledge malformed messages so they don't block the stream
                     redis_client.xack(stream_name, group_name, msg_id)
 
-        if not decoded_entries:
+        if not entries_with_ids:
             return "no valid logs"
 
         # Divide into chunks of 100 logs
         chunk_size = 100
-        chunks = [decoded_entries[i:i + chunk_size] for i in range(0, len(decoded_entries), chunk_size)]
+        chunks_of_entries = [entries_with_ids[i:i + chunk_size] for i in range(0, len(entries_with_ids), chunk_size)]
 
         # Launch subtasks in parallel
-        job = group(process_log_chunk.s(chunk) for chunk in chunks)
+        job = group(process_log_chunk.s([item['data'] for item in chunk], stream_name, group_name, [item['id'] for item in chunk])
+                    for chunk in chunks_of_entries)
         result = job.apply_async()
 
-        redis_client.xack(stream_name, group_name, *message_ids)
-
-        return f"Spawned {len(chunks)} subtasks"
+        return f"Spawned {len(chunks_of_entries)} subtasks to process {len(entries_with_ids)} logs."
 
     except Exception as exc:
         logger.error(f"Master task error: {exc}")

@@ -82,14 +82,11 @@ services:
   db:
     image: postgres:15
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: logdb
-      POSTGRES_USER: loguser
-      POSTGRES_PASSWORD: PgPass_1234
+    env_file: ./.env
     volumes:
       - ./deploy/pgbouncer/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - pgdata:/var/lib/postgresql/data
-    command: postgres -c hba_file=/etc/postgresql/pg_hba.conf
+    command: postgres -c hba_file=/etc/postgresql/pg_hba.conf -c max_connections=200
     <<: *default-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U loguser -d logdb"]

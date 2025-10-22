@@ -17,6 +17,8 @@ RUN echo "[pgbouncer]" > /etc/pgbouncer/pgbouncer.ini && \
     echo "admin_users = ${POSTGRES_USER}" >> /etc/pgbouncer/pgbouncer.ini && \
     echo "stats_users = ${POSTGRES_USER}" >> /etc/pgbouncer/pgbouncer.ini && \
     echo "pool_mode = session" >> /etc/pgbouncer/pgbouncer.ini && \
+    echo "max_client_conn = 500" >> /etc/pgbouncer/pgbouncer.ini && \ 
+    echo "default_pool_size = 100" >> /etc/pgbouncer/pgbouncer.ini && \
     echo "[databases]" >> /etc/pgbouncer/pgbouncer.ini && \
     echo "logdb = host=db port=5432 dbname=logdb user=${POSTGRES_USER} password=${POSTGRES_PASSWORD}" >> /etc/pgbouncer/pgbouncer.ini
 
