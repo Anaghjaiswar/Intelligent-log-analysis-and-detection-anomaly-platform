@@ -122,3 +122,12 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# --- Celery Beat Schedules ---
+CELERY_BEAT_SCHEDULE = {
+    'process-logs-every-10-seconds': {
+        'task': 'logs.tasks.process_log_master',
+        'schedule': 10.0,  # Run every 10 seconds
+        'options': {'expires': 15.0}, # Task will expire after 15 seconds
+    },
+}

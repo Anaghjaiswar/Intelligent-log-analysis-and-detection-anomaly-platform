@@ -36,12 +36,11 @@ class LogIngestionView(APIView):
         if 'metadata' in data_to_queue and isinstance(data_to_queue['metadata'], dict):
             data_to_queue['metadata'] = json.dumps(data_to_queue['metadata'])
         else:
-            data_to_queue['metadata'] = "{}" # Ensure it's a string, even if empty
+            data_to_queue['metadata'] = "{}" 
 
         try:
-            # Get the raw Redis client from the 'log_queue' cache configuration
             redis_client = caches['log_queue'].client.get_client()
-            redis_client.xadd("logs:queue", data_to_queue) # Use Redis Streams
+            redis_client.xadd("logs:queue", data_to_queue)
         except Exception:
             # django-redis will raise an exception if it can't connect
             return Response({"error": "Log queue service is unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
