@@ -10,6 +10,7 @@ colorama==0.4.6
 cron_descriptor==2.0.6
 dj-database-url==3.0.1
 Django==5.2.7
+django-redis
 django-celery-beat==2.8.1
 django-prometheus==2.4.1
 django-timezone-field==7.1

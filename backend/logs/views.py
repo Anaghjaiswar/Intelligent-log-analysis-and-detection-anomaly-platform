@@ -1,5 +1,4 @@
 import json
-import redis
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,20 +9,15 @@ from .auth import HasAPIKey
 from django.core.cache import caches
 
 
-try:
-    redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    redis_client.ping()
-except (redis.exceptions.ConnectionError, AttributeError):
-    redis_client = None
-
 class LogIngestionView(APIView):
     """
     API endpoint for ingesting log entries.
     Authenticates the request via an API key, validates the log data,
     and queues it for asynchronous processing.
     """
-    ## this involves db lookup but on indexed fields(quite fast), but in extreme high-throughput scenarios we will look for caching strategies.
+    ## this line involves db lookup but on indexed fields(quite fast), but in extreme high-throughput scenarios we will look for caching strategies.
     permission_classes = [HasAPIKey] 
+
     serializer_class = LogEntrySerializer
 
     def post(self, request, *args, **kwargs):
