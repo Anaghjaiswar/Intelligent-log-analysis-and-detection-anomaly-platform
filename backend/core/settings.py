@@ -73,6 +73,25 @@ DATABASES = {
     )
 }
 
+# --- Caching (for Redis) ---
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/1'), # Use a different DB for cache
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    },
+    # Define a specific connection for the log queue
+    "log_queue": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0'), # Same as Celery
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+
 # --- Password Validation ---
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
