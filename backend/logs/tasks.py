@@ -69,7 +69,7 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
         # read upto batchsize entries from queue
         entries = redis_client.xreadgroup(
             groupname=group_name,
-            consumer_name=consumer_name, # This consumer_name should ideally be unique per worker instance
+            consumername=consumer_name, # This consumer_name should ideally be unique per worker instance
             streams={stream_name: ">"},
             count=batch_size,
             block=2000,
