@@ -1,29 +1,40 @@
-from rest_framework import permissions
+from rest_framework.permissions import BasePermission
+from django.core.cache import caches
 from .models import Application
 
-class HasAPIKey(permissions.BasePermission):
+class HasAPIKey(BasePermission):
     """
-    custom permission to allow access only to requests with valid api key via the "X-API-KEY" header.
+    Custom permission to authenticate requests via an API key.
+    - Checks for the 'X-API-Key' header.
+    - Implements a cache-aside strategy for high performance, freeing up
+      database connections for write-heavy operations.
     """
-    message = "Invalid or missing API Key."
+    message = 'Invalid or missing API Key.'
+    # Use the 'default' cache defined in settings.py, which points to Redis DB 1
+    cache = caches['default']
 
-    def has_permission(self, request, view) -> bool:
-        """
-        we need this to check if the request is coming from agenuine application with a valid api key.
-        """
-
-        api_key = request.META.get('HTTP_X_API_KEY')
+    def has_permission(self, request, view):
+        api_key = request.headers.get('X-API-Key')
         if not api_key:
             return False
-        
-        try:
-            # try to get application from that api key
-            application = Application.objects.get(api_key=api_key)
-        except Application.DoesNotExist:
-            return False
-        
-        # attach the application object to the request for further use in views
-        # it will help to know which application is making the request
-        request.application = application
-        return True
 
+        # 1. Check the cache first
+        cache_key = f"api_key:{api_key}"
+        cached_app_id = self.cache.get(cache_key)
+
+        if cached_app_id:
+            # Cache hit: Attach a lightweight object to the request. No DB query needed.
+            request.application = Application(id=cached_app_id)
+            return True
+
+        # 2. Cache miss: Query the database
+        try:
+            application = Application.objects.get(api_key=api_key)
+            # 3. Cache the result for 1 hour (3600 seconds)
+            self.cache.set(cache_key, application.id, timeout=3600)
+            request.application = application
+            return True
+        except Application.DoesNotExist:
+            # Cache "not found" for 60s to mitigate brute-force attempts on invalid keys
+            self.cache.set(cache_key, "not_found", timeout=60)
+            return False
