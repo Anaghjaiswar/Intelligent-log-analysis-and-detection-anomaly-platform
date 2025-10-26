@@ -68,15 +68,20 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
     try:
         stream_name = "logs:queue"
         group_name = "log_consumers"
-        
-        # Ensure the consumer group exists
-        try:
-            redis_client.xgroup_create(stream_name, group_name, id='0', mkstream=True)
-        except Exception as e:
-            # Group might already exist, ignore error if it's about group existence
-            if "BUSYGROUP" not in str(e):
-                logger.error(f"Error creating Redis consumer group {group_name} for stream {stream_name}: {e}")
-                raise
+        lock_key = f"lock:create-group:{stream_name}:{group_name}"
+
+        # Use a Redis lock to prevent a race condition on group creation
+        # when multiple workers start at the same time.
+        with redis_client.lock(lock_key, timeout=10):
+            try:
+                # Check if group exists by getting group info
+                redis_client.xinfo_groups(stream_name)
+            except Exception:
+                # If xinfo_groups fails, the stream or group likely doesn't exist.
+                # It's safe to try and create it.
+                logger.info(f"Consumer group '{group_name}' or stream '{stream_name}' not found. Attempting to create.")
+                redis_client.xgroup_create(stream_name, group_name, id='0', mkstream=True)
+                logger.info(f"Successfully created consumer group '{group_name}'.")
 
         # read upto batchsize entries from queue
         entries = redis_client.xreadgroup(

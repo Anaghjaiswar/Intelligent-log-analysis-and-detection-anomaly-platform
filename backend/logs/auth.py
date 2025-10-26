@@ -21,11 +21,14 @@ class HasAPIKey(BasePermission):
         # 1. Check the cache first
         cache_key = f"api_key:{api_key}"
         cached_app_id = self.cache.get(cache_key)
-
-        if cached_app_id:
-            # Cache hit: Attach a lightweight object to the request. No DB query needed.
-            request.application = Application(id=cached_app_id)
-            return True
+        if cached_app_id is not None:
+            if cached_app_id == "not_found":
+                # Cache hit, but it's explicitly marked as invalid. Deny permission.
+                return False
+            else:
+                # Cache hit, valid application found
+                request.application = Application.objects.get(id=cached_app_id)
+                return True
 
         # 2. Cache miss: Query the database
         try:

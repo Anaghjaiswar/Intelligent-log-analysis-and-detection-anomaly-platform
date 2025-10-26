@@ -11,7 +11,7 @@ import threading
 from queue import Queue, Empty
 
 
-API_KEY='64e19f35-b52f-4720-806c-110a8246b56a'
+API_KEY='55dc133c-dafc-40de-917b-58bbf54f38b6'
 # API_ENDPOINT = "http://localhost/api/ingest/" # Nginx listens on port 80 , but bypass it during development
 API_ENDPOINT = "http://localhost:8000/api/ingest/" 
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -186,3 +186,6 @@ if __name__ == "__main__":
                 send_log(session, generate_log_entry())
                 time.sleep(0.1) # Add a small delay for simple mode if desired
         print(f"\nFinished. Successfully sent {success_counter}/{args.num_logs} logs.")
+
+
+# to bulk test use the following command: # python load_tester.py --mode bulk --num_logs 2000 --concurrency 50        
