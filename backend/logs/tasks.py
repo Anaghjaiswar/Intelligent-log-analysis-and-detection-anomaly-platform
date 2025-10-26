@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import uuid
 from datetime import datetime
 from celery import shared_task, group
 from django.core.cache import caches
@@ -59,7 +61,7 @@ def process_log_chunk(self, entries, stream_name, group_name, message_ids):
         return 0
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5)
-def process_log_master(self, consumer_name="worker-1", batch_size=500):
+def process_log_master(self, batch_size=500):
     """
     queue based log inngestion using redis streams
     """
@@ -68,6 +70,17 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
     try:
         stream_name = "logs:queue"
         group_name = "log_consumers"
+        
+        # Create a unique consumer name for each worker process to ensure true parallel processing.
+        # Combining hostname with PID is robust for multi-process workers on a single machine.
+        try:
+            worker_hostname = self.request.hostname
+            process_id = os.getpid()
+            consumer_name = f"{worker_hostname}-{process_id}"
+        except Exception as e:
+            logger.warning(f"Could not reliably determine hostname/PID: {e}. Using UUID fallback.")
+            consumer_name = f"worker-{uuid.uuid4().hex}"
+
         lock_key = f"lock:create-group:{stream_name}:{group_name}"
 
         # Use a Redis lock to prevent a race condition on group creation
@@ -75,7 +88,7 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
         with redis_client.lock(lock_key, timeout=10):
             try:
                 # Check if group exists by getting group info
-                redis_client.xinfo_groups(stream_name)
+                redis_client.xinfo_ipgroups(stream_name)
             except Exception:
                 # If xinfo_groups fails, the stream or group likely doesn't exist.
                 # It's safe to try and create it.
@@ -86,7 +99,7 @@ def process_log_master(self, consumer_name="worker-1", batch_size=500):
         # read upto batchsize entries from queue
         entries = redis_client.xreadgroup(
             groupname=group_name,
-            consumername=consumer_name, # This consumer_name should ideally be unique per worker instance
+            consumername=consumer_name,
             streams={stream_name: ">"},
             count=batch_size,
             block=2000,
