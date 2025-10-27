@@ -19,57 +19,87 @@ logger = logging.getLogger(__name__)
 @shared_task(bind=True)
 def process_log_chunk(self, entries, stream_name, group_name, message_ids):
     """Subtask that processes a batch of decoded log entries."""
+    redis_client = caches["log_queue"].client.get_client()
+    dlq_stream_name = "logs:dlq"
+    dlq_max_len = 10000  # Cap the DLQ to prevent unbounded memory growth
+
     try:
         app_ids = {int(e["application_id"]) for e in entries}
         # Fetch all unique applications in a single query
         apps = {a.id: a for a in Application.objects.filter(id__in=app_ids)}
 
         to_create = []
-        for e in entries:
-            app = apps.get(int(e["application_id"]))
-            if not app:
-                continue
-            # Create LogEntry model instances
-            to_create.append(
-                LogEntry(
-                    application=app,
-                    timestamp=datetime.fromisoformat(e["timestamp"]),
-                    level=e["level"].upper(),
-                    message=e["message"],
-                    metadata=json.loads(e.get("metadata", "{}")),
+        failed_entries = [] # For entries that fail validation
+
+        for entry_data, msg_id in zip(entries, message_ids):
+            try:
+                # Defensive validation for each field
+                if "application_id" not in entry_data:
+                    raise KeyError("Missing 'application_id' field.")
+                app_id = int(entry_data["application_id"])
+                app = apps.get(app_id)
+                if not app:
+                    raise Application.DoesNotExist(f"Application with ID {app_id} not found.")
+
+                if "timestamp" not in entry_data:
+                    raise KeyError("Missing 'timestamp' field.")
+                timestamp = datetime.fromisoformat(entry_data["timestamp"])
+
+                metadata = json.loads(entry_data.get("metadata", "{}"))
+
+                to_create.append(
+                    LogEntry(
+                        application=app,
+                        timestamp=timestamp,
+                        level=entry_data["level"].upper(),
+                        message=entry_data["message"],
+                        metadata=metadata,
+                    )
                 )
-            )
+            except (KeyError, ValueError, Application.DoesNotExist, json.JSONDecodeError) as e:
+                logger.warning(f"Failed to process log entry {msg_id}. Moving to DLQ. Reason: {e}")
+                # Avoid double-encoding: store a flat structure in the DLQ
+                dlq_entry = entry_data.copy()
+                dlq_entry['error'] = str(e)
+                dlq_entry['original_id'] = msg_id.decode('utf-8') if isinstance(msg_id, bytes) else msg_id
+                dlq_entry['failed_at'] = datetime.utcnow().isoformat()
+                failed_entries.append(dlq_entry)
 
         if to_create:
             with transaction.atomic():
                 LogEntry.objects.bulk_create(to_create, batch_size=100)
-            
-            # Acknowledge messages only after successful database insertion
-            try:
-                redis_client = caches["log_queue"].client.get_client()
-                redis_client.xack(stream_name, group_name, *message_ids)
-                logger.info(f"Successfully processed and acknowledged {len(to_create)} logs.")
-            except Exception as e:
-                # If ack fails, logs might be reprocessed, which is acceptable for at-least-once delivery.
-                logger.error(f"DB insert succeeded, but Redis XACK failed for {len(message_ids)} messages: {e}")
+            logger.info(f"Successfully processed and saved {len(to_create)} logs.")
 
-        return len(to_create)
+        # Use a pipeline for atomic and efficient Redis operations
+        if message_ids:
+            pipe = redis_client.pipeline()
+            # Move all failed entries to the Dead Letter Queue
+            for item in failed_entries:
+                pipe.xadd(dlq_stream_name, item, maxlen=dlq_max_len)
+            
+            # Acknowledge all messages in this chunk from the original stream
+            pipe.xack(stream_name, group_name, *message_ids)
+            pipe.execute()
+
+        # Return a structured result for better observability
+        return {"processed": len(to_create), "dlq": len(failed_entries)}
 
     except Exception as exc:
         logger.error(f"Error in process_log_chunk: {exc}")
         # Do not acknowledge messages if processing failed. They will be re-processed later.
-        return 0
+        return {"processed": 0, "dlq": 0, "error": str(exc)}
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5)
 def process_log_master(self, batch_size=500):
     """
     queue based log inngestion using redis streams
     """
-
     redis_client = caches["log_queue"].client.get_client()
     try:
         stream_name = "logs:queue"
         group_name = "log_consumers"
+        dlq_stream_name = "logs:dlq"
+        dlq_max_len = 10000
         
         # Create a unique consumer name for each worker process to ensure true parallel processing.
         # Combining hostname with PID is robust for multi-process workers on a single machine.
@@ -88,7 +118,7 @@ def process_log_master(self, batch_size=500):
         with redis_client.lock(lock_key, timeout=10):
             try:
                 # Check if group exists by getting group info
-                redis_client.xinfo_ipgroups(stream_name)
+                redis_client.xinfo_groups(stream_name)
             except Exception:
                 # If xinfo_groups fails, the stream or group likely doesn't exist.
                 # It's safe to try and create it.
@@ -106,8 +136,8 @@ def process_log_master(self, batch_size=500):
         )
 
         if not entries:
-            logger.info("no logs in queue")
-            return "Idle"
+            logger.debug("No logs in queue to process.")
+            return {"status": "idle", "processed": 0}
         
         # Group messages and their IDs together for chunking
         entries_with_ids = []
@@ -125,12 +155,18 @@ def process_log_master(self, batch_size=500):
                         }
                     entries_with_ids.append({'id': msg_id, 'data': decoded_entry})
                 except Exception as e:
-                    logger.warning(f"Bad entry skipped: {e}")
-                    # Acknowledge malformed messages so they don't block the stream
-                    redis_client.xack(stream_name, group_name, msg_id)
+                    logger.warning(f"Malformed message {msg_id} skipped. Moving to DLQ. Error: {e}")
+                    # Move malformed message to DLQ, avoiding double-encoding
+                    dlq_payload = {k.decode(): v.decode() for k, v in data.items()}
+                    dlq_payload['error'] = f"DECODE_ERROR: {e}"
+                    dlq_payload['original_id'] = msg_id.decode()
+                    dlq_payload['failed_at'] = datetime.utcnow().isoformat()
+
+                    redis_client.xadd(dlq_stream_name, dlq_payload, maxlen=dlq_max_len)
+                    redis_client.xack(stream_name, group_name, msg_id) # Ack original message
 
         if not entries_with_ids:
-            return "no valid logs"
+            return {"status": "success", "processed": 0, "message": "No valid logs to process after filtering."}
 
         # Divide into chunks of 100 logs
         chunk_size = 100
@@ -141,7 +177,12 @@ def process_log_master(self, batch_size=500):
                     for chunk in chunks_of_entries)
         result = job.apply_async()
 
-        return f"Spawned {len(chunks_of_entries)} subtasks to process {len(entries_with_ids)} logs."
+        return {
+            "status": "spawned_subtasks",
+            "subtask_count": len(chunks_of_entries),
+            "log_count": len(entries_with_ids),
+            "group_id": result.id
+        }
 
     except Exception as exc:
         logger.error(f"Master task error: {exc}")
