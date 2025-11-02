@@ -7,6 +7,17 @@ from celery import shared_task, group
 from django.core.cache import caches
 from django.db import transaction
 from .models import Application, LogEntry
+from prometheus_client import Counter, Gauge, Histogram
+from celery.signals import worker_process_init
+from prometheus_client import start_http_server
+
+@worker_process_init.connect
+def start_prometheus_server(sender, **kwargs):
+    """
+    Start a Prometheus HTTP server in the Celery worker process on port 8001.
+    This allows Prometheus to scrape the custom metrics defined in this file.
+    """
+    start_http_server(8001)
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +26,14 @@ logger = logging.getLogger(__name__)
 # Celery Master Task (process_log_master) : reads ~500 logs from Redis and splits them into 5 parallel subtasks of 100 each.
 # Celery Subtasks (process_log_chunk) → each subtask handles inserts concurrently using bulk_create.
 
+
+# --------- Prometheus Metrics Definitions --------------------------
+# we need prometheus metrics to monitor our log ingestion system
+LOGS_PROCESSED_TOTAL = Counter('logs_processed_total', 'Total number of logs succesfully processed and saved.')
+LOGS_FAILED_DLQ_TOTAL = Counter('logs_failed_dlq_total', 'Total number of logs that failed processing and went to Dead letter Queue')
+LOG_QUEUE_LENGTH = Gauge('log_queue_length_gauge', 'current number of items in the redis log queue.')
+MASTER_TASK_DURATION = Histogram('master_taks_duration_seconds', 'Histogram of the process_log_master task duration.')
+CHUNK_TASK_DURATION = Histogram('chunk_task_duration_seconds','Histogram of the process_log_chunk task duration')
 
 @shared_task(bind=True)
 def process_log_chunk(self, entries, stream_name, group_name, message_ids):
@@ -68,6 +87,7 @@ def process_log_chunk(self, entries, stream_name, group_name, message_ids):
         if to_create:
             with transaction.atomic():
                 LogEntry.objects.bulk_create(to_create, batch_size=100)
+            LOGS_PROCESSED_TOTAL.inc(len(to_create)) # we are incrementing our counter here 
             logger.info(f"Successfully processed and saved {len(to_create)} logs.")
 
         # Use a pipeline for atomic and efficient Redis operations
@@ -76,6 +96,7 @@ def process_log_chunk(self, entries, stream_name, group_name, message_ids):
             # Move all failed entries to the Dead Letter Queue
             for item in failed_entries:
                 pipe.xadd(dlq_stream_name, item, maxlen=dlq_max_len)
+            LOGS_FAILED_DLQ_TOTAL.inc(len(failed_entries)) # incrementing DLQ counters
             
             # Acknowledge all messages in this chunk from the original stream
             pipe.xack(stream_name, group_name, *message_ids)
@@ -90,6 +111,7 @@ def process_log_chunk(self, entries, stream_name, group_name, message_ids):
         return {"processed": 0, "dlq": 0, "error": str(exc)}
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5)
+@MASTER_TASK_DURATION.time()
 def process_log_master(self, batch_size=500):
     """
     queue based log inngestion using redis streams
@@ -126,6 +148,11 @@ def process_log_master(self, batch_size=500):
                 redis_client.xgroup_create(stream_name, group_name, id='0', mkstream=True)
                 logger.info(f"Successfully created consumer group '{group_name}'.")
 
+        #update queue length gauge
+        queue_len = redis_client.xlen(stream_name)  # geeting the length of logs:queue stream
+        LOG_QUEUE_LENGTH.set(queue_len)
+
+        
         # read upto batchsize entries from queue
         entries = redis_client.xreadgroup(
             groupname=group_name,
@@ -163,6 +190,7 @@ def process_log_master(self, batch_size=500):
                     dlq_payload['failed_at'] = datetime.utcnow().isoformat()
 
                     redis_client.xadd(dlq_stream_name, dlq_payload, maxlen=dlq_max_len)
+                    LOGS_FAILED_DLQ_TOTAL.inc() # increment DLQ counter for malformed logs
                     redis_client.xack(stream_name, group_name, msg_id) # Ack original message
 
         if not entries_with_ids:

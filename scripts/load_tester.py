@@ -11,7 +11,7 @@ import threading
 from queue import Queue, Empty
 
 
-API_KEY='55dc133c-dafc-40de-917b-58bbf54f38b6'
+API_KEY= '217e50e2-a315-472d-a6ee-31aacfe66e77'
 # API_ENDPOINT = "http://localhost/api/ingest/" # Nginx listens on port 80 , but bypass it during development
 API_ENDPOINT = "http://localhost:8000/api/ingest/" 
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]

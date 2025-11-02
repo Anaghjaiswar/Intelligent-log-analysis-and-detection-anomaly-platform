@@ -20,5 +20,5 @@ from django.urls import path, include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('logs.urls')),
-    path('', include('django_prometheus.urls'))
+    path('', include('django_prometheus.urls')) # This URL tells you about the health of your API server.
 ]

@@ -44,7 +44,9 @@ services:
     image: intelligent-log-analysis:v1.0.0
     restart: unless-stopped
     env_file: ./.env
-    command: celery -A core worker -l info
+    environment:
+      - CELERY_WORKER_SEND_TASK_EVENTS=True
+    command: celery -A core worker -l info -E
     depends_on: # <-- 2. More Robust Dependencies
       db:
         condition: service_healthy
@@ -52,6 +54,8 @@ services:
         condition: service_started
       pgbouncer:
         condition: service_healthy
+    ports: # Expose metrics port for custom Prometheus metrics
+      - "8001:8001"
     <<: *default-network
 
   celery-beat:
@@ -69,6 +73,21 @@ services:
         condition: service_started
       pgbouncer:
         condition: service_healthy
+    <<: *default-network
+
+  celery-exporter:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: intelligent-log-analysis:v1.0.0
+    restart: unless-stopped
+    env_file: ./.env
+    command: celery-prometheus-exporter --broker=redis://redis:6379/0 --addr=0.0.0.0:9808
+    ports:
+      - "9808:9808"
+    depends_on:
+      redis:
+        condition: service_started
     <<: *default-network
 
   redis:

@@ -17,3 +17,14 @@ scrape_configs:
       # The target is the 'web' service container on port 8000.
       # Docker's internal DNS will resolve 'web' to the container's IP address.
       - targets: ['web:8000']
+
+  # Job 3: Monitor Celery task events.
+  # This scrapes the /metrics endpoint exposed by celery-prometheus-exporter.
+  - job_name: 'celery'
+    static_configs:
+      - targets: ['celery-exporter:9808'] # his URL gives you a general overview of your Celery system's health and throughput
+
+  # Job 4: Monitor custom application metrics from Celery workers.
+  - job_name: 'celery-worker-custom'
+    static_configs:
+      - targets: ['celery-worker:8001']

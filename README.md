@@ -135,3 +135,9 @@ Phase 1 focused on building and testing the core data pipeline. The following co
 * Add metrics collection using `django-prometheus`.
 * Implement simple rule-based alerting task.
 * Set up basic Grafana dashboards.
+
+Summary
+URL	Service	Metrics Provided	Purpose
+localhost:8000/metrics	web (Django)	API requests, DB queries, Cache hits	API Performance Monitoring
+localhost:9808/	celery-exporter	Task successes/failures, Runtimes	General Celery Health
+localhost:8001/	celery-worker	Your custom metrics (logs processed, queue length)	Application-Specific Logic Monitoring
