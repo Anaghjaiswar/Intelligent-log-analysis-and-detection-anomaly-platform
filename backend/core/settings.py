@@ -130,4 +130,8 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 10.0,  # Run every 10 seconds
         'options': {'expires': 15.0}, # Task will expire after 15 seconds
     },
+    'check-error-rate-every-minute':{
+        'task': 'logs.tasks.check_error_rate',
+        'schedule': 60.0,
+    },
 }

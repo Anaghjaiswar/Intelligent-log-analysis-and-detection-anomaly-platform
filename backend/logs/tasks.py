@@ -2,11 +2,12 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from celery import shared_task, group
 from django.core.cache import caches
 from django.db import transaction
 from .models import Application, LogEntry
+from django.utils import timezone
 from prometheus_client import Counter, Gauge, Histogram
 from celery.signals import worker_process_init
 from prometheus_client import start_http_server
@@ -215,3 +216,39 @@ def process_log_master(self, batch_size=500):
     except Exception as exc:
         logger.error(f"Master task error: {exc}")
         raise self.retry(exc=exc)
+
+
+@shared_task
+def check_error_rate():
+    """
+    Periodically checks the rate of ERROR level logs in the last minute.
+    If the rate exceeds a threshold, it logs a critical warning and returns an alert status.
+    This is a simple rule-based alerting mechanism.
+    """
+    THRESHOLD = 50
+    one_minute_ago = timezone.now() - timedelta(minutes=1)
+    try:
+        error_count = LogEntry.objects.filter(
+            level="ERROR",
+            timestamp__gte=one_minute_ago
+        ).count()
+
+        alert_triggered = error_count > THRESHOLD
+
+        if alert_triggered:
+            message = f"ALERT: High ERROR rate detected! {error_count} errors in the last minute (threshold: {THRESHOLD})."
+            logger.critical(message)
+        else:
+            message = f"Error rate within limits. Found {error_count} errors in the last minute."
+            logger.info(message)
+
+        return {
+            "status": "success",
+            "error_count": error_count,
+            "threshold": THRESHOLD,
+            "alert_triggered": alert_triggered,
+            "message": message,
+        }
+    except Exception as e:
+        logger.error(f"Error occurred in check_error_rate task: {e}")
+        return {"status": "error", "message": str(e)}
